@@ -1,0 +1,22 @@
+# Ignorar arquivos compilados do Python
+__pycache__/
+*.pyc
+
+# Ignorar ambiente virtual (Gigante e desnecessário no Git)
+.venv/
+env/
+venv/
+
+# Ignorar variáveis de ambiente (SEGURANÇA!)
+.env
+
+# Ignorar banco de dados SQLite (Opcional, mas recomendado)
+*.db
+*.sqlite3
+
+# Ignorar pasta do VS Code (configurações locais suas)
+.vscode/
+
+# Ignorar arquivos de cache do Pytest e MyPy
+.pytest_cache/
+.mypy_cache/
