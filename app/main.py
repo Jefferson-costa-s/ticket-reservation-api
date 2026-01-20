@@ -6,7 +6,6 @@ import psutil
 import os
 from sqlalchemy.orm import Session
 from app.config import get_db
-
 import asyncio
 import time
 
@@ -18,7 +17,7 @@ async def simulate_slow_io(delay: float = 1.0) -> dict:
     Simula uma operação lenta (como query ao banco).
     """
     await asyncio.sleep(delay)
-    return {"satus": "ok"}
+    return {"status": "ok"}
 
 # Global sessions (RUIM: sem cleanup)
 sessions_bad: Dict[str, dict] = {}
@@ -77,11 +76,8 @@ def create_session_good(user_id: int):
     return {"session_id": session_id}
 
 
-@app
-post("/reserve-sync")
-
-
-def reserve_sync(eventid: int, quantity: int) -> dict:
+@app.post("/reserve-sync")
+def reserve_sync(event_id: int, quantity: int) -> dict:
     """
     ❌ RUIM: Bloqueante - tudo sequencial
     Simula reserva com 3 validações de 1 segundo cada.
@@ -109,8 +105,80 @@ def reserve_sync(eventid: int, quantity: int) -> dict:
     return {
         "status": "reserved",
         "elapsed_seconds": elapsed,
-        "concurrency_mode": "sync (bloqueante)"
+        "concurrency_mode": "sync (bloqueante)",
         "validations": [validation1, validation2, validation3]
+    }
+
+
+@app.post("/reserve-async")
+async def reserve_async(event_id: int, quantity: int) -> dict:
+    """
+    BOM: Não-bloqueante - validações em paralelo
+    ✅
+    Simula reserva com 3 validações de 1 segundo cada.
+    Com async/await e asyncio.gather, tudo acontece EM PARALELO.
+    """
+# Validação input
+    if event_id <= 0 or quantity <= 0:
+        raise HTTPException(status_code=400, detail="Invalid input")
+
+    start = time.time()
+
+    # PARALELO: 2 tarefas assincronamente
+    results = await asyncio.gather(
+        simulate_slow_io(1.0),  # Validação 1: Evento existe? (1s)
+        simulate_slow_io(1.0),  # Validação 2: Ingeressos disponiveis? (1s)
+        simulate_slow_io(1.0),  # Validação 3: Usuario pode reservar? (1s)
+    )
+    elapsed = time.time() - start
+    # Extrair resultados
+    validation1 = {"check": "event_exists",
+                   "result": results[0]["status"] == "ok"}
+    validation2 = {"check": "tickets_available",
+                   "result": results[1]["status"] == "ok"}
+    validation3 = {"check": "user_can_reserve",
+                   "result": results[2]["status"] == "ok"}
+
+    return {
+        "status": "reserved",
+        "elapsed_seconds": elapsed,
+        "concurrency_mode": "async (não-bloqueante)",
+        "validations": [validation1, validation2, validation3]
+    }
+
+
+@app.get("/benchmark")
+async def benchmark() -> dict:
+    """
+    Compara tempo de sync vs async.
+    Roda ambas as rotas e mostra a diferença.
+    """
+    import httpx
+
+    # Testar SYNC
+    start_sync = time.time()
+    async with httpx.AsyncClient() as client:
+        response_sync = await client.post(
+            "http://localhost:8000/reserve-sync",
+            json={"event_id": 1, "quantity": 1}
+        )
+    sync_time = time.time() - start_sync
+
+    # Testar Async
+    start_async = time.time()
+    async with httpx.AsyncClient() as client:
+        response_async = await client.post(
+            "http://localhost:8000/reserve-async",
+            json={"event_id": 1, "quantity": 1}
+        )
+    async_time = time.time() - start_async
+    speedup = sync_time / async_time
+
+    return {
+        "sync_time_seconds": round(sync_time, 2),
+        "async_time_seconds": round(async_time, 2),
+        "speedup_factor": f"{speedup:.1f}x mais rapido",
+        "message": "Async é mais efeiciente que Sync!"
     }
 
 
