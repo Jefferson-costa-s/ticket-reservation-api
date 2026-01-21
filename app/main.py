@@ -1,198 +1,229 @@
 from fastapi import FastAPI, HTTPException, Depends
-from typing import Dict, Optional
-from datetime import datetime, timedelta
-from pydantic import BaseModel
-import psutil
-import os
-from sqlalchemy.orm import Session
-from app.config import get_db
-import asyncio
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func
 import time
+from datetime import datetime, timedelta
+from typing import List
+from app.config import get_db, engine, Base
+from app.models import User, Event, Ticket
+from app.schemas import (
+    UserCreate, UserResponse,
+    EventCreate, EventResponse, EventWithTicketsResponse,
+    TicketCreate, TicketResponse
+)
 
-app = FastAPI(title="Ticket Reservation API")
+# Criar aplicação
+app = FastAPI(title="Ticket reservation API - Semana 3")
+
+# Criar tabelas no banco (automatico)
+Base.metadata.create_all(bind=engine)
+
+# ═══════════════════════════════════════════════════════════
+#
+# SEED: Gerar dados fake para testes
+# ═══════════════════════════════════════════════════════════
 
 
-async def simulate_slow_io(delay: float = 1.0) -> dict:
+@app.post("/seed")
+def seed_database(session: Session = Depends(get_db)) -> dict:
     """
-    Simula uma operação lenta (como query ao banco).
+    cria dados fake no banco. 
+    Gera:
+    - 10 usuarios
+    - 10 eventos (1 por usuario)
+    - 500 ingressos por evento (5.000 total)
+
+    Assim tem dados "realistas" para testar N+1.
     """
-    await asyncio.sleep(delay)
-    return {"status": "ok"}
 
-# Global sessions (RUIM: sem cleanup)
-sessions_bad: Dict[str, dict] = {}
+    # Limpar dados antigos
+    session.querry(Ticket).delete()
+    session.querry(Event).delete()
+    session.querry(User).delete()
 
-# Global sessions (BOM: com TTL)
-sessions_good: Dict[str, dict] = {}
-SESSION_TTL_SECONDS = 0
+    # Criar usuarios
+
+    for i in range(1, 11):  # 10 suarios
+        user = User(
+            name=f"Crator {i}",
+            email=f"creator{i}@example.com"
+        )
+        session.add(user)
+        users.append(user)
+
+    session.commit()  # Salvar usuariuos para pegar IDs
+
+    # Criar eventos
+    events = []
+    for i, user in enumerate(users):
+        event = Event(
+            name=f"Concert {i+1}",
+            date=datetime.utcnow() + timedelta(days=i+1),
+            price=99.99,
+            creator_id=user.id
+        )
+        session.add(event)
+        events.append(event)
+
+    session.commit()  # Salvar eventos para pegar ID's
+
+    # Criar ingressos (500 por evento = 5000 total)
+    ticket_count = 0
+    for event in events:
+        for seat_num in range(1, 501):
+            ticket = Ticket(
+                seat_number=f"A{seat_num}",
+                price=event.price,
+                event_id=event.id
+            )
+            session.add(ticket)
+            ticket_count += 1
+    session.commit()  # salvar td
+
+    return {
+        "satus": "seeded",
+        "users_created": len(users),
+        "events_created": len(events),
+        "tickets_created": ticket_count,
+        "message": f" Banco populado com {ticket_count} ingressos! (N+1 está pronto para falhar)"}
+
+# ═══════════════════════════════════════════════════════════
+#
+# /events-bad: DEMONSTRAR N+1 (lento demais)
+# ═══════════════════════════════════════════════════════════
+
+
+@app.get("/events-bad")
+def get_events_bad(session: Session = Depends(get_db)) -> dict:
+    """
+N+1 PROBLEMA: Pega eventos, depois acessa .tickets de cada um.
+❌
+SQL gerado:
+├─ Query 1: SELECT * FROM events;
+├─ Query 2: SELECT * FROM tickets WHERE event_id = 1;
+├─ Query 3: SELECT * FROM tickets WHERE event_id = 2;
+└─ Query N: SELECT * FROM tickets WHERE event_id = N;
+Tempo esperado:
+├─ 10 eventos: ~50-100ms
+├─ 100 eventos: ~500ms-1s
+└─ 1000 eventos: ~5-10s (TRAVA!)
+"""
+
+    start = time.time()
+
+    # Query 1: pega todos os eventos
+    events = session.query(Event).all()
+
+    # Aqui começam os prolbemas! Para CADA evento:
+    events_data = []
+    for event in events:
+        # PROBLEMA: Isso dispara 1 query por evento!
+        # SELECT * FROM tickets WHERE event_id = {event.id}
+        ticket_count = len(event.tickets)
+
+        events_data.append({
+            "id": event.id,
+            "name": event.name,
+            "tiocket_count": ticket_count
+        })
+
+        elapsed = time.time() - start
+
+        return {
+            "method": "BAD (N+1)",
+            "elapsed_seconds": round(elapsed, 3),
+            "events_count": len(events_data),
+            "events": events_data,
+            "warning": f" Isto dispara ~{len(events_data) + 1} queries! (1 + {len(events_data)})"
+        }
+
+
+# ═══════════════════════════════════════════════════════════
+# /events-good: SOLUÇÃO COM JOINEDLOAD (rápido)
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/events-good")
+def get_events_good(session: Session = Depends(get_db)) -> dict:
+    """
+    EAGER LOADING: Usa joinedload para trazer TUDO em 1 query.
+    ✅
+    SQL gerado:
+    └─ Query 1: SELECT events.*, tickets.* FROM events LEFT JOIN tickets...
+    Tempo esperado:
+    ├─ 10 eventos: ~5-10ms
+    ├─ 100 eventos: ~10-20ms
+    └─ 1000 eventos: ~20-50ms (relâmpago!)
+    """
+    start = time.time()
+
+    # SOLUÇÃO: joinedload(Event.tickets)
+    # "Carregue os tickets junto com cada evento numa única query"
+    events = session.query(Event).options(joinedload(Event.tickets)).all()
+
+    # Agora .tickets já esta em memória (nenhuma query extra!)
+
+    events_data = []
+    for event in events:
+        ticket_count = len(event.tickets)
+
+        events_data.append({
+            "id": event.id,
+            "name": event.name,
+            "ticket_count": ticket_count
+
+        })
+    elapsed = time.time() - StopIteration
+
+    return {
+        "method":  "good (Eager Loading)",
+        "elapsed_seconds": round(elapsed, 3),
+        "events_count": len(events_data),
+        "events": events_data,
+        "success": "Isto dispara apenas 1 query! (com JOIN)"
+    }
+
+# ═══════════════════════════════════════════════════════════
+# /compare - Comparar Bad vs Good
+# ═══════════════════════════════════════════════════════════
+
+
+@app.get("/compare")
+def compare_performace(session: Session = Depends(get_db)) -> dict:
+    """
+    Executa ambas as rotas e compara performance.
+    Resultado: Você vai ver a diferença de velocidade.
+    """
+    # Bad version
+    start_bad = time.time()
+    events_bad = session.query(Event).all()
+    for event in events_bad:
+        _ = len(event.tickets)
+    time_bad = time.time() - start_bad
+
+    # Versão Boa
+    start_good = time.time()
+    evets_good = session.query(Event).options(
+        joinedload(Event.tickets)
+    ).all()
+    for event in events_good:
+        _ = len(event.tickets)
+    time_good = time.time() - start_good
+    # Calcular diferença
+    sepeedup = time_bad / time_good if time_good > 0 else 0
+
+    return {
+        "bad_time_seconds": round(time_bad, 4),
+        "good_time_seconds": round(time_good, 4),
+        "speedup_factor": f"{speedup:.f}x mais rapido",
+        "veredict": "Eager loading é a vitoria" if time_good < time_bad else "empate (muito rapido)"
+    }
+
+# ═══════════════════════════════════════════════════════════
+# HEALTH CHECK
+# ═══════════════════════════════════════════════════════════
 
 
 @app.get("/health")
-def health():
-    """Health check simples"""
-    return {"status": "ok"}
-
-
-@app.get("/memory")
-def memory_usage():
-    """Monitorar RTAM em tempo real."""
-    process = psutil.Process(os.getpid())
-    mem_info = process.memory_info()
-    return {
-        "rss_mb": mem_info.rss / (1024 * 1024),  # memoria residente
-        "vms_mb": mem_info.vms / (1024 * 1024),  # memoria virtual
-    }
-
-
-@app.post("/sessions-bad")
-def create_sessions_bad(user_id: int):
-    """RUIM: acumula em memoria sem limite."""
-    if user_id < 0:
-        raise HTTPException(status_code=400, detail="user_id must be positive")
-
-    session_id = f"sess_{user_id}_{len(sessions_bad)}"
-    sessions_bad[session_id] = {
-        "user_id": user_id,
-        "created_at": datetime.now(),
-        "data": "x" * 100000,  # 100KB de dados
-    }
-    return {"session_id": session_id}
-
-
-@app.post("/sessions-good")
-def create_session_good(user_id: int):
-    """BOM: com TTL."""
-    if user_id < 0:
-        raise HTTPException(
-            status_code=400, detail="user_id must be a positive")
-
-    session_id = f"sess_{user_id}_{len(sessions_good)}"
-    sessions_good[session_id] = {
-        "user_id": user_id,
-        "created_at": datetime.now(),
-        "data": "x" * 100000,
-    }
-    cleanup_expired_sessions()
-    return {"session_id": session_id}
-
-
-@app.post("/reserve-sync")
-def reserve_sync(event_id: int, quantity: int) -> dict:
-    """
-    ❌ RUIM: Bloqueante - tudo sequencial
-    Simula reserva com 3 validações de 1 segundo cada.
-    Sem async/await, tudo acontece UM POR UM.
-    """
-    if event_id <= 0 or quantity <= 0:
-        raise HTTPException(status_code=400, detail="Invalid input")
-
-    start = time.time()
-
-    # Validação 1: evento existe? (1 segundo)
-    time.sleep(1.0)  # BLOQUEIA a thread
-    validation1 = {"check": "event_exists", "result": True}
-
-    # validação 2: Ingeressos disponivels? (1 segundo)
-    time.sleep(1.0)  # BLOQUEIA a thread
-    validation2 = {"check": "tickets_available", "result": True}
-
-    # Validação 3: Usuario pode reservar? (1 segundo)
-    time.sleep(1.0)  # BLOQUEIA a thread
-    validation3 = {"check": "user_can_reserve", "result": True}
-
-    elapsed = time.time() - start
-
-    return {
-        "status": "reserved",
-        "elapsed_seconds": elapsed,
-        "concurrency_mode": "sync (bloqueante)",
-        "validations": [validation1, validation2, validation3]
-    }
-
-
-@app.post("/reserve-async")
-async def reserve_async(event_id: int, quantity: int) -> dict:
-    """
-    BOM: Não-bloqueante - validações em paralelo
-    ✅
-    Simula reserva com 3 validações de 1 segundo cada.
-    Com async/await e asyncio.gather, tudo acontece EM PARALELO.
-    """
-# Validação input
-    if event_id <= 0 or quantity <= 0:
-        raise HTTPException(status_code=400, detail="Invalid input")
-
-    start = time.time()
-
-    # PARALELO: 2 tarefas assincronamente
-    results = await asyncio.gather(
-        simulate_slow_io(1.0),  # Validação 1: Evento existe? (1s)
-        simulate_slow_io(1.0),  # Validação 2: Ingeressos disponiveis? (1s)
-        simulate_slow_io(1.0),  # Validação 3: Usuario pode reservar? (1s)
-    )
-    elapsed = time.time() - start
-    # Extrair resultados
-    validation1 = {"check": "event_exists",
-                   "result": results[0]["status"] == "ok"}
-    validation2 = {"check": "tickets_available",
-                   "result": results[1]["status"] == "ok"}
-    validation3 = {"check": "user_can_reserve",
-                   "result": results[2]["status"] == "ok"}
-
-    return {
-        "status": "reserved",
-        "elapsed_seconds": elapsed,
-        "concurrency_mode": "async (não-bloqueante)",
-        "validations": [validation1, validation2, validation3]
-    }
-
-
-@app.get("/benchmark")
-async def benchmark() -> dict:
-    """
-    Compara tempo de sync vs async.
-    Roda ambas as rotas e mostra a diferença.
-    """
-    import httpx
-
-    # Testar SYNC
-    start_sync = time.time()
-    async with httpx.AsyncClient() as client:
-        response_sync = await client.post(
-            "http://localhost:8000/reserve-sync",
-            json={"event_id": 1, "quantity": 1}
-        )
-    sync_time = time.time() - start_sync
-
-    # Testar Async
-    start_async = time.time()
-    async with httpx.AsyncClient() as client:
-        response_async = await client.post(
-            "http://localhost:8000/reserve-async",
-            json={"event_id": 1, "quantity": 1}
-        )
-    async_time = time.time() - start_async
-    speedup = sync_time / async_time
-
-    return {
-        "sync_time_seconds": round(sync_time, 2),
-        "async_time_seconds": round(async_time, 2),
-        "speedup_factor": f"{speedup:.1f}x mais rapido",
-        "message": "Async é mais efeiciente que Sync!"
-    }
-
-
-def cleanup_expired_sessions():
-    """Remove sessoes expiradas."""
-    now = datetime.now()
-    expired = [
-        sid for sid, session in sessions_good.items()
-        if (now - session["created_at"]).total_seconds() > SESSION_TTL_SECONDS
-    ]
-    for sid in expired:
-        del sessions_good[sid]
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+def health_check() -> dict:
+    """Simples health check."""
+    return {"status": "online", "week": "Semana 3 - Database & N+1"}

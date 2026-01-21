@@ -1,35 +1,64 @@
 from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
-
-Base = declarative_base()
+# Importar Base do config para garantir que o Alembic e o main.py enxerguem as tabelas
+from app.config import Base
 
 
 class User(Base):
-    __tablename__ = "events"
-    id = Column(Integer, primary_key=True)
-    email = Column(String, unique=True)
-    hashed_password = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    __tablename__ = "users"
+
+    id: int = Column(Integer, primary_key=True, index=True)
+    name: str = Column(String, index=True)
+    email: str = Column(String, unique=True, index=True)
+
+    events = relationship(
+        "Event",
+        back_populates="creator",
+        cascade="all, delete-orphan"
+    )
+
+    def __repr__(self) -> str:
+        return f"<User(id={self.id}, name={self.name}, email={self.email})>"
 
 
 class Event(Base):
     __tablename__ = "events"
-    id = Column(Integer, primary_key=True)
-    name = Column(String)
-    total_tickets = Column(Integer)
-    available_tickets = Column(Integer)
-    price = Column(Float)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    tickets = relationship("Ticket", back_populates="event")
+
+    id: int = Column(Integer, primary_key=True, index=True)
+    name: str = Column(String, index=True)
+    description: str = Column(String)
+    date: datetime = Column(DateTime, default=datetime.utcnow)
+    price: float = Column(Float)
+
+    creator_id: int = Column(Integer, ForeignKey("users.id"))
+
+    creator = relationship(
+        "User",
+        back_populates="events"
+    )
+
+    # CORREÇÃO: Removido ": list"
+    tickets = relationship(
+        "Ticket",
+        back_populates="event",
+        cascade="all, delete-orphan"
+    )
+
+    def __repr__(self) -> str:
+        return f"<Event(id={self.id}, name={self.name}, tickets={len(self.tickets)})>"
 
 
 class Ticket(Base):
     __tablename__ = "tickets"
-    id = Column(Integer, primary_key=True)
-    event_id = Column(Integer, ForeignKey("events.id"))
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    is_reserved = Column(Boolean, default=False)
-    reserved_at = Column(DateTime, nullable=True)
+
+    id: int = Column(Integer, primary_key=True, index=True)
+    seat_number: str = Column(String)
+    price: float = Column(Float)
+    event_id: int = Column(Integer, ForeignKey("events.id"), index=True)
+
+    # Aqui já estava correto (sem type hint), mantido igual
     event = relationship("Event", back_populates="tickets")
+
+    def __repr__(self) -> str:
+        return f"<Ticket(id={self.id}, seat={self.seat_number})>"
