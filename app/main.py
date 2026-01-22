@@ -25,68 +25,63 @@ Base.metadata.create_all(bind=engine)
 
 
 @app.post("/seed")
-def seed_database(session: Session = Depends(get_db)) -> dict:
-    """
-    cria dados fake no banco. 
-    Gera:
-    - 10 usuarios
-    - 10 eventos (1 por usuario)
-    - 500 ingressos por evento (5.000 total)
+def seed_database(session: Session = Depends(get_db)):
+    # 1. Limpar banco (Staging)
+    session.query(Ticket).delete()
+    session.query(Event).delete()
+    session.query(User).delete()
 
-    Assim tem dados "realistas" para testar N+1.
-    """
+    # Commit imediato para garantir que o banco limpe MESMO se der erro depois
+    session.commit()
 
-    # Limpar dados antigos
-    session.querry(Ticket).delete()
-    session.querry(Event).delete()
-    session.querry(User).delete()
+    print("--- Banco Limpo ---")  # Debug no terminal
 
-    # Criar usuarios
-
-    for i in range(1, 11):  # 10 suarios
+    # 2. Criar Usuários
+    users = []  # <--- AQUI ESTAVA O ERRO (Faltava inicializar a lista)
+    for i in range(1, 11):
         user = User(
-            name=f"Crator {i}",
+            name=f"Creator {i}",
             email=f"creator{i}@example.com"
         )
         session.add(user)
-        users.append(user)
+        users.append(user)  # <--- Indentação correta (dentro do for)
 
-    session.commit()  # Salvar usuariuos para pegar IDs
+    session.commit()  # Salva usuários para gerar IDs
+    print(f"--- {len(users)} Usuários Criados ---")
 
-    # Criar eventos
+    # 3. Criar Eventos
     events = []
     for i, user in enumerate(users):
         event = Event(
             name=f"Concert {i+1}",
-            date=datetime.utcnow() + timedelta(days=i+1),
-            price=99.99,
+            description=f"Show top {i+1}",
+            date=datetime.now(),
+            price=100.0,
             creator_id=user.id
         )
         session.add(event)
         events.append(event)
 
-    session.commit()  # Salvar eventos para pegar ID's
+    session.commit()  # Salva eventos
+    print(f"--- {len(events)} Eventos Criados ---")
 
-    # Criar ingressos (500 por evento = 5000 total)
-    ticket_count = 0
+    # 4. Criar Ingressos
     for event in events:
-        for seat_num in range(1, 501):
+        for i in range(50):  # 50 ingressos por evento
             ticket = Ticket(
-                seat_number=f"A{seat_num}",
+                seat_number=f"Seat {i}",
                 price=event.price,
                 event_id=event.id
             )
             session.add(ticket)
-            ticket_count += 1
-    session.commit()  # salvar td
+
+    session.commit()  # Salva ingressos
 
     return {
-        "satus": "seeded",
-        "users_created": len(users),
-        "events_created": len(events),
-        "tickets_created": ticket_count,
-        "message": f" Banco populado com {ticket_count} ingressos! (N+1 está pronto para falhar)"}
-
+        "message": "Seed Realizado com Sucesso!",
+        "users": len(users),
+        "events": len(events)
+    }
 # ═══════════════════════════════════════════════════════════
 #
 # /events-bad: DEMONSTRAR N+1 (lento demais)
@@ -96,19 +91,18 @@ def seed_database(session: Session = Depends(get_db)) -> dict:
 @app.get("/events-bad")
 def get_events_bad(session: Session = Depends(get_db)) -> dict:
     """
-N+1 PROBLEMA: Pega eventos, depois acessa .tickets de cada um.
-❌
-SQL gerado:
-├─ Query 1: SELECT * FROM events;
-├─ Query 2: SELECT * FROM tickets WHERE event_id = 1;
-├─ Query 3: SELECT * FROM tickets WHERE event_id = 2;
-└─ Query N: SELECT * FROM tickets WHERE event_id = N;
-Tempo esperado:
-├─ 10 eventos: ~50-100ms
-├─ 100 eventos: ~500ms-1s
-└─ 1000 eventos: ~5-10s (TRAVA!)
-"""
-
+    N+1 PROBLEMA: Pega eventos, depois acessa .tickets de cada um.
+    ❌
+    SQL gerado:
+    Query 1: SELECT * FROM events;
+    Query 2: SELECT * FROM tickets WHERE event_id = 1;
+    Query 3: SELECT * FROM tickets WHERE event_id = 2;
+    Query N: SELECT * FROM tickets WHERE event_id = N;
+    Tempo esperado:
+    10 eventos: ~50-100ms
+    100 eventos: ~500ms-1s
+    1000 eventos: ~5-10s (TRAVA!)
+    """
     start = time.time()
 
     # Query 1: pega todos os eventos
@@ -124,7 +118,7 @@ Tempo esperado:
         events_data.append({
             "id": event.id,
             "name": event.name,
-            "tiocket_count": ticket_count
+            "ticket_count": ticket_count
         })
 
         elapsed = time.time() - start
@@ -172,7 +166,7 @@ def get_events_good(session: Session = Depends(get_db)) -> dict:
             "ticket_count": ticket_count
 
         })
-    elapsed = time.time() - StopIteration
+    elapsed = time.time() - start
 
     return {
         "method":  "good (Eager Loading)",
@@ -202,19 +196,19 @@ def compare_performace(session: Session = Depends(get_db)) -> dict:
 
     # Versão Boa
     start_good = time.time()
-    evets_good = session.query(Event).options(
+    events_good = session.query(Event).options(
         joinedload(Event.tickets)
     ).all()
     for event in events_good:
         _ = len(event.tickets)
     time_good = time.time() - start_good
     # Calcular diferença
-    sepeedup = time_bad / time_good if time_good > 0 else 0
+    speedup = time_bad / time_good if time_good > 0 else 0
 
     return {
         "bad_time_seconds": round(time_bad, 4),
         "good_time_seconds": round(time_good, 4),
-        "speedup_factor": f"{speedup:.f}x mais rapido",
+        "speedup_factor": f"{speedup:.2f}x mais rapido",
         "veredict": "Eager loading é a vitoria" if time_good < time_bad else "empate (muito rapido)"
     }
 
