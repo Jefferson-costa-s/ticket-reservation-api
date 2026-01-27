@@ -85,3 +85,15 @@ class TicketResponse(TicketBase):  # CORREÇÃO: Classe que faltava!
 class EventWithTicketsResponse(EventResponse):
     """Para retornar evento com seus ingressos"""
     tickets: List[TicketResponse] = []
+
+
+class TicketReserveRequest(BaseModel):
+    event_id: int
+    user_id: int
+
+
+class TicketReserveResponse(BaseModel):
+    ticket_id: int
+    event_id: int
+    user_id: int
+    reserved_at: datetime

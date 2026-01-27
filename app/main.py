@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func
+from sqlalchemy import func, select
 import time
 from datetime import datetime, timedelta
 from typing import List
@@ -9,21 +9,86 @@ from app.models import User, Event, Ticket
 from app.schemas import (
     UserCreate, UserResponse,
     EventCreate, EventResponse, EventWithTicketsResponse,
-    TicketCreate, TicketResponse
+    TicketCreate, TicketResponse, TicketReserveRequest, TicketReserveResponse
 )
 
 # Criar aplicação
-app = FastAPI(title="Ticket reservation API - Semana 3")
+app = FastAPI(title="Ticket reservation API - Semana 4")
+
+
+@app.post("/tickets/reserve", response_model=TicketReserveResponse, status_code=201
+          )
+def reserve_ticket(req: TicketReserveRequest,
+                   session: Session = Depends(get_db),) -> TicketReserveResponse:
+    """
+        Reserva 1 ingresso disponível para um evento específico,
+        usando transação ACID + row lock.
+    """
+    try:
+        # 1. Iniciar transação explicita
+        with session.begin():
+            # 2. Buscar evento
+            event = session.get(Event, req.event_id)
+            if event is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Event not found",
+                )
+           # 1. Montar a Query BÁSICA (sem travas ainda)
+            query = select(Ticket).where(
+                Ticket.event_id == req.event_id,
+                Ticket.is_reserved.is_(False),
+            )
+
+            # 2. Aplicar a trava CONDICIONALMENTE
+            # Se NÃO for SQLite, usa o lock avançado (Postgres)
+            if "sqlite" not in str(session.bind.url):
+                query = query.with_for_update(skip_locked=True)
+
+            # 3. Finalizar com o limite (apenas 1 ingresso)
+            query = query.limit(1)
+
+            result = session.execute(query)
+            ticket: Ticket | None = result.scalar_one_or_none()
+
+            if ticket is None:
+                # Nenhum ingresso livre: conlifot de reserva
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="No tickets available for this event",
+                )
+            # 4. Atualizar ticket (marcar como reservado)
+            ticket.is_reserved = True
+            ticket.user_id = req.user_id
+            ticket.reserved_at = datetime.utcnow()
+
+            # 5. Commit acontece automaticamente ao sair do with sessions.begin()
+
+            # 6. Montar resposta
+            response = TicketReserveResponse(
+                ticket_id=ticket.id,
+                event_id=ticket.event_id,
+                user_id=ticket.user_id,  # type: ignore [arg-type]
+                reserved_at=ticket.reserved_at,  # type: ignora [arg-type]
+            )
+            return response
+    except HTTPException:
+        # Repassa exceções de negócio (404, 409)
+        raise
+    except Exception:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unexpected error while reserving ticket",
+        )
+
 
 # Criar tabelas no banco (automatico)
-Base.metadata.create_all(bind=engine)
-
+# Base.metadata.create_all(bind=engine)❌ Alembic cuida disso agora
 # ═══════════════════════════════════════════════════════════
 #
 # SEED: Gerar dados fake para testes
 # ═══════════════════════════════════════════════════════════
-
-
 @app.post("/seed")
 def seed_database(session: Session = Depends(get_db)):
     # 1. Limpar banco (Staging)

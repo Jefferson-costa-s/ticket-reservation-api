@@ -3,6 +3,7 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 # Importar Base do config para garantir que o Alembic e o main.py enxerguem as tabelas
 from app.config import Base
+from sqlalchemy.sql import func
 
 
 class User(Base):
@@ -11,7 +12,7 @@ class User(Base):
     id: int = Column(Integer, primary_key=True, index=True)
     name: str = Column(String, index=True)
     email: str = Column(String, unique=True, index=True)
-
+    created_at = Column(DateTime, server_default=func.now(), nullable=True)
     events = relationship(
         "Event",
         back_populates="creator",
@@ -56,8 +57,10 @@ class Ticket(Base):
     seat_number: str = Column(String)
     price: float = Column(Float)
     event_id: int = Column(Integer, ForeignKey("events.id"), index=True)
-
-    # Aqui já estava correto (sem type hint), mantido igual
+    is_reserved: bool = Column(Boolean, default=False, index=True)
+    reserved_at: datetime | None = Column(DateTime, nullable=True)
+    user_id: int | None = Column(
+        Integer, ForeignKey("users.id"), nullable=True)
     event = relationship("Event", back_populates="tickets")
 
     def __repr__(self) -> str:
