@@ -13,74 +13,109 @@ from app.schemas import (
 )
 
 # Criar aplicação
-app = FastAPI(title="Ticket reservation API - Semana 4")
+app = FastAPI(title="Ticket reservation API - Semana 5")
 
 
-@app.post("/tickets/reserve", response_model=TicketReserveResponse, status_code=201
-          )
-def reserve_ticket(req: TicketReserveRequest,
-                   session: Session = Depends(get_db),) -> TicketReserveResponse:
+def check_user_ticket_limit(user_id: int, session: Session) -> None:
     """
-        Reserva 1 ingresso disponível para um evento específico,
-        usando transação ACID + row lock.
+    Regra de negócio: usuario não pode ter mais de 5 reservas ativas 
     """
-    try:
-        # 1. Iniciar transação explicita
-        with session.begin():
-            # 2. Buscar evento
-            event = session.get(Event, req.event_id)
-            if event is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Event not found",
-                )
-           # 1. Montar a Query BÁSICA (sem travas ainda)
-            query = select(Ticket).where(
-                Ticket.event_id == req.event_id,
-                Ticket.is_reserved.is_(False),
-            )
+    active_count = session.query(func.count(Ticket.id)).filter(
+        Ticket.user_id == user_id,
+        Ticket.is_reserved == True
+    ).scalar()
 
-            # 2. Aplicar a trava CONDICIONALMENTE
-            # Se NÃO for SQLite, usa o lock avançado (Postgres)
-            if "sqlite" not in str(session.bind.url):
-                query = query.with_for_update(skip_locked=True)
-
-            # 3. Finalizar com o limite (apenas 1 ingresso)
-            query = query.limit(1)
-
-            result = session.execute(query)
-            ticket: Ticket | None = result.scalar_one_or_none()
-
-            if ticket is None:
-                # Nenhum ingresso livre: conlifot de reserva
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="No tickets available for this event",
-                )
-            # 4. Atualizar ticket (marcar como reservado)
-            ticket.is_reserved = True
-            ticket.user_id = req.user_id
-            ticket.reserved_at = datetime.utcnow()
-
-            # 5. Commit acontece automaticamente ao sair do with sessions.begin()
-
-            # 6. Montar resposta
-            response = TicketReserveResponse(
-                ticket_id=ticket.id,
-                event_id=ticket.event_id,
-                user_id=ticket.user_id,  # type: ignore [arg-type]
-                reserved_at=ticket.reserved_at,  # type: ignora [arg-type]
-            )
-            return response
-    except HTTPException:
-        # Repassa exceções de negócio (404, 409)
-        raise
-    except Exception:
-        session.rollback()
+    if active_count >= 5:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unexpected error while reserving ticket",
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Você já possui 5 reservas ativas. Cancele uma para continuar"
         )
+
+
+@app.post("/tickets/reserve", response_model=TicketReserveResponse, status_code=201)
+def reserve_ticket(
+        req: TicketReserveRequest,
+        session: Session = Depends(get_db),) -> TicketReserveResponse:
+    """
+    Reserva com validação de limite de tickets por usuario.
+    """
+    # 1. Validar limite de tickets do usuario
+    check_user_ticket_limit(req.user_id, session)
+
+    # 2. Resto da logica (mesmo da semana 4)
+    try:
+        with session.begin():
+            # ... (codio de reserva ACID aqui)
+            pass
+    except HTTPException:
+        raise
+
+
+# @app.post("/tickets/reserve", response_model=TicketReserveResponse, status_code=201
+#           )
+# def reserve_ticket(req: TicketReserveRequest,
+#                    session: Session = Depends(get_db),) -> TicketReserveResponse:
+#     """
+#         Reserva 1 ingresso disponível para um evento específico,
+#         usando transação ACID + row lock.
+#     """
+#     try:
+#         # 1. Iniciar transação explicita
+#         with session.begin():
+#             # 2. Buscar evento
+#             event = session.get(Event, req.event_id)
+#             if event is None:
+#                 raise HTTPException(
+#                     status_code=status.HTTP_404_NOT_FOUND,
+#                     detail="Event not found",
+#                 )
+#            # 1. Montar a Query BÁSICA (sem travas ainda)
+#             query = select(Ticket).where(
+#                 Ticket.event_id == req.event_id,
+#                 Ticket.is_reserved.is_(False),
+#             )
+
+#             # 2. Aplicar a trava CONDICIONALMENTE
+#             # Se NÃO for SQLite, usa o lock avançado (Postgres)
+#             if "sqlite" not in str(session.bind.url):
+#                 query = query.with_for_update(skip_locked=True)
+
+#             # 3. Finalizar com o limite (apenas 1 ingresso)
+#             query = query.limit(1)
+
+#             result = session.execute(query)
+#             ticket: Ticket | None = result.scalar_one_or_none()
+
+#             if ticket is None:
+#                 # Nenhum ingresso livre: conlifot de reserva
+#                 raise HTTPException(
+#                     status_code=status.HTTP_409_CONFLICT,
+#                     detail="No tickets available for this event",
+#                 )
+#             # 4. Atualizar ticket (marcar como reservado)
+#             ticket.is_reserved = True
+#             ticket.user_id = req.user_id
+#             ticket.reserved_at = datetime.utcnow()
+
+#             # 5. Commit acontece automaticamente ao sair do with sessions.begin()
+
+#             # 6. Montar resposta
+#             response = TicketReserveResponse(
+#                 ticket_id=ticket.id,
+#                 event_id=ticket.event_id,
+#                 user_id=ticket.user_id,  # type: ignore [arg-type]
+#                 reserved_at=ticket.reserved_at,  # type: ignora [arg-type]
+#             )
+#             return response
+#     except HTTPException:
+#         # Repassa exceções de negócio (404, 409)
+#         raise
+#     except Exception:
+#         session.rollback()
+#         raise HTTPException(
+#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#             detail="Unexpected error while reserving ticket",
+#         )
 
 
 # Criar tabelas no banco (automatico)
@@ -286,3 +321,24 @@ def compare_performace(session: Session = Depends(get_db)) -> dict:
 def health_check() -> dict:
     """Simples health check."""
     return {"status": "online", "week": "Semana 3 - Database & N+1"}
+
+
+@app.get("/events/search")
+def search_events(
+    name: str,
+    session: Session = Depends(get_db),
+) -> List[dict]:
+    """
+    Busca eventos por nome.
+    Teste de SQL injection: tentar 'evento\' OR \'1\'=\'1'
+    """
+    stmt = select(Event).where(Event.name.ilike(f"%{name}%"))
+    results = session.execute(stmt).scalars().all()
+    return [
+        {
+            "id": event.id,
+            "name": event.name,
+            "price": event.price,
+        }
+        for event in results
+    ]
