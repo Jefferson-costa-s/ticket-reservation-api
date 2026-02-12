@@ -7,7 +7,7 @@ import os
 # CONFIGURAÇOES DE SEGURANÇA
 
 # Contexto para hash de senhasa (bcrypt)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
 # Configuraçoes JWT
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-CHANGE-IN-PRODUCTION")
@@ -59,6 +59,18 @@ def create_access_token(user_id: int) -> str:
         # Expiration: Até quando isso vale?
         "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
 
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def create_refresh_token(user_id: int) -> str:
+    """
+    Cria refresh token (longo - 7 dias).
+    diferença tecnica: Expiraçao maior é type = 'refresh'.
+    """
+    payload = {
+        "sub": str(user_id),
+        "type": "refresh",
+        "exp": datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 

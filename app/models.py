@@ -1,7 +1,6 @@
 from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey
 from sqlalchemy.orm import relationship
 from datetime import datetime
-# Importar Base do config para garantir que o Alembic e o main.py enxerguem as tabelas
 from app.config import Base
 from sqlalchemy.sql import func
 
@@ -12,6 +11,7 @@ class User(Base):
     id: int = Column(Integer, primary_key=True, index=True)
     name: str = Column(String, index=True)
     email: str = Column(String, unique=True, index=True)
+    hashed_password: str = Column(String, nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=True)
     events = relationship(
         "Event",
