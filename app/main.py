@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from app.routers import auth, tickets  # Importamos os módulos
 from app.routers import users
+from app.config import engine, Base
 
 app = FastAPI(title="Ticket Reservation API - Production Ready")
 
