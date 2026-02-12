@@ -45,7 +45,7 @@ def reserve_ticket(
     # 2. Resto da logica (mesmo da semana 4)
     try:
         with session.begin():
-            # ... (codio de reserva ACID aqui)
+            # ... (codigo de reserva ACID aqui)
             pass
     except HTTPException:
         raise
